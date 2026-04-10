@@ -1,21 +1,25 @@
 # XIAO Matter Switch
 
-A battery-powered, wireless 6-button smart switch for Apple HomeKit, built on the **Seeed Studio XIAO MG24 (Matter)** development kit.  It connects to HomeKit over **Matter / Thread** and behaves like a Nanoleaf Sense+ — no hub required, just a Thread Border Router (Apple TV 4K, HomePod mini, or HomePod).
+A battery-powered, wireless 6-button smart **switch controller** for Apple HomeKit, built on the **Seeed Studio XIAO MG24 (Matter)** development kit.  It connects to HomeKit over **Matter / Thread** and behaves like a Nanoleaf Sense+ — no hub required, just a Thread Border Router (Apple TV 4K, HomePod mini, or HomePod).
+
+**This device has no lights of its own.**  Every button press fires a Matter button event.  You create automations in the Home app to make each button do whatever you want — turn on/off lights, adjust brightness, activate scenes, run shortcuts, etc.
 
 ---
 
-## Features
+## How It Works
 
-| Button | Function | HomeKit Endpoint |
-|--------|----------|-----------------|
-| ON | Turn light on | EP1 — Dimmable Light |
-| OFF | Turn light off | EP1 — Dimmable Light |
-| Dimmer ▲ | Increase brightness by ~10 % | EP1 — Dimmable Light |
-| Dimmer ▼ | Decrease brightness by ~10 % | EP1 — Dimmable Light |
-| Scene 1 | Trigger HomeKit Automation | EP2 — Generic Switch |
-| Scene 2 | Trigger HomeKit Automation | EP3 — Generic Switch |
+Each of the 6 buttons is exposed to HomeKit as a separate **Generic Switch** (button) accessory.  When you press a button, the device sends a Matter "press" event to HomeKit.  You then wire up automations in the Home app:
 
-Scene buttons appear as **"Switch"** accessories in HomeKit.  Create automations in the Home app triggered by *"When Switch is Pressed"* to do anything — change scenes, run shortcuts, toggle other devices.
+| Button | Matter Endpoint | Suggested HomeKit Automation |
+|--------|----------------|------------------------------|
+| ON | EP1 — Generic Switch | Turn on [your lights] |
+| OFF | EP2 — Generic Switch | Turn off [your lights] |
+| Dim Up | EP3 — Generic Switch | Increase brightness of [your lights] |
+| Dim Down | EP4 — Generic Switch | Decrease brightness of [your lights] |
+| Scene 1 | EP5 — Generic Switch | Activate a scene / run a shortcut / anything |
+| Scene 2 | EP6 — Generic Switch | Another scene or automation |
+
+All 6 buttons work the same way in HomeKit — each one is a configurable button you assign freely in automations.
 
 ### Power
 - **EM1 light sleep** between button presses (see [Sleep Strategy](#sleep-strategy)).
@@ -84,29 +88,40 @@ Internal pull-ups are enabled in firmware — no external resistors needed.
    Device is NOT commissioned.
    To add to HomeKit:
      1. Open the Apple Home app.
-     2. Tap  +  →  Add Accessory.
+     2. Tap  +  ->  Add Accessory.
      3. Scan the QR code on the device label, or choose
         'More Options' and enter the setup code manually.
+     6 button accessories will be added (ON, OFF, Dim Up,
+     Dim Down, Scene 1, Scene 2).  Create automations for
+     each one in the Home app to control your smart lights.
    ```
 
 3. Open the **Home** app on your iPhone/iPad → tap **+** → **Add Accessory**.
-4. Scan the QR code printed on the XIAO MG24 board or on the packaging, **or** choose *More Options* and type the numeric setup code (printed next to the QR code).
-5. Follow the on-screen prompts.  Three accessories will be added:
-   - **Wall Switch Light** — controls your light via EP1.
-   - **Scene 1** — a switch you can use in automations.
-   - **Scene 2** — a second switch for a second automation.
+4. Scan the QR code printed on the XIAO MG24 board or on the packaging, **or** choose *More Options* and type the numeric setup code.
+5. Follow the on-screen prompts.  **Six** button accessories will be added:
+   - **ON**, **OFF**, **Dim Up**, **Dim Down**, **Scene 1**, **Scene 2**
 
-> **Tip:** Assign the accessories to a room and rename them to whatever makes sense for your setup (e.g., "Living Room Scene", "Movie Mode").
+> **Tip:** Assign all accessories to the same room as the lights they will control, then set up automations for each button.
 
 ---
 
-## HomeKit Automation Setup (Scene Buttons)
+## HomeKit Automation Setup
+
+Do this for every button you want to use:
 
 1. In the **Home** app, open **Automations → +**.
 2. Choose **An Accessory is Controlled**.
-3. Select **Scene 1** (or Scene 2).
-4. Trigger: **"is pressed"** (or "initial press").
-5. Add the action you want — e.g., activate a Scene, toggle a light group, lock a door.
+3. Select the button (e.g., **ON**).
+4. Trigger: **"is pressed"**.
+5. Add the action — for example:
+   - **ON** → Turn on your living room lights.
+   - **OFF** → Turn off your living room lights.
+   - **Dim Up** → Increase brightness of your living room lights by 10 %.
+   - **Dim Down** → Decrease brightness of your living room lights by 10 %.
+   - **Scene 1** → Activate a "Movie Night" scene.
+   - **Scene 2** → Activate a "Reading" scene.
+
+You can assign completely different lights or actions to each button — the switch itself does not store or track any light state.
 
 ---
 

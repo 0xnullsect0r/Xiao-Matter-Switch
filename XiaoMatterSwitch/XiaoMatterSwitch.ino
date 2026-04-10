@@ -3,53 +3,62 @@
  * @brief   Seeed Studio XIAO MG24 — 6-Button Wireless Smart Switch
  *          HomeKit integration via Matter over Thread (Silicon Labs SDK)
  *
+ * This device is a SWITCH CONTROLLER ONLY — it has no lights of its own.
+ * Every button press fires a Matter Generic Switch "InitialPress" event on its
+ * own endpoint.  In HomeKit you create automations triggered by each button
+ * ("When <Button> is pressed → do something") to control whatever smart lights
+ * or other accessories you choose.
+ *
  * ─── Matter Endpoints ───────────────────────────────────────────────────────
- *  EP 1  Dimmable Light     ON / OFF / DIM UP / DIM DOWN buttons control a
- *                           single HomeKit light (or group) via Matter attributes.
- *  EP 2  Generic Switch     Scene 1 — stateless momentary switch; triggers
- *                           HomeKit automations ("When Switch is Pressed…").
- *  EP 3  Generic Switch     Scene 2 — same as above for a second scene/automation.
+ *  EP 1  Generic Switch  →  ON button
+ *  EP 2  Generic Switch  →  OFF button
+ *  EP 3  Generic Switch  →  Dim Up button
+ *  EP 4  Generic Switch  →  Dim Down button
+ *  EP 5  Generic Switch  →  Scene 1 button  (configure freely in HomeKit)
+ *  EP 6  Generic Switch  →  Scene 2 button  (configure freely in HomeKit)
+ *
+ *  Each endpoint appears as a separate "button" accessory in the Home app.
+ *  Assign automations to each button independently — e.g.:
+ *    ON       → Turn on [your lights]
+ *    OFF      → Turn off [your lights]
+ *    Dim Up   → Increase brightness of [your lights]
+ *    Dim Down → Decrease brightness of [your lights]
+ *    Scene 1  → Activate a scene / run a shortcut / toggle anything
+ *    Scene 2  → Another scene or automation
  *
  * ─── Button Wiring ──────────────────────────────────────────────────────────
  *  Button      XIAO Pin   Connect to GND when pressed (internal pull-up active)
  *  ─────────── ─────────  ──────────────────────────────────────────────────
  *  ON          D0
  *  OFF         D1
- *  Dimmer UP   D2
- *  Dimmer DOWN D3
+ *  Dim Up      D2
+ *  Dim Down    D3
  *  Scene 1     D4
  *  Scene 2     D5
  *
  * ─── Power / Sleep Strategy ─────────────────────────────────────────────────
  *  Energy Mode EM1 (light sleep) ONLY.
  *
- *  Known XIAO MG24 / EFR32MG24 silicon errata & SDK constraints that dictate
- *  this choice:
- *    • EM2 / EM3 / EM4 shut down the high-frequency oscillator that the
- *      Silicon Labs Matter SDK requires for the Thread radio.  Entering EM2+
- *      outside of the SDK-managed "Matter sleep" path corrupts the stack.
- *    • The SiLabs Arduino core does not expose safe EM2 retention-RAM restore
- *      hooks; peripheral (USART / I2C) state is NOT restored on EM2 wake.
- *    • EM4 is a full reset; all RAM is lost.
- *    • EM1 keeps SRAM, all peripherals, and the radio stack intact while
- *      cutting CPU clock-gating power to ~1–2 mA — adequate for a coin-cell
- *      or LiPo battery-powered wall switch.
+ *  Known XIAO MG24 / EFR32MG24 silicon errata & SDK constraints:
+ *    • EM2 / EM3 shut down the HFXO that the Thread radio requires; entering
+ *      them outside the SDK-managed sleep path corrupts Thread state on wake.
+ *    • EM4 is a full power-on reset — all RAM and Thread credentials lost.
+ *    • EM1 gates only the CPU clock; SRAM, peripherals, and radio DMA stay
+ *      alive (~1–3 mA with ICD slow-poll active).
  *
- *  Matter ICD (Intermittently Connected Device) mode registers the device
- *  with the Thread network as a sleepy end-device (SED).  The Thread router
- *  buffers incoming messages; the radio polls every SLOW_POLL_S seconds.
- *  Any button press wakes the CPU via GPIO interrupt before the poll fires.
+ *  Matter ICD (Intermittently Connected Device) mode keeps the Thread network
+ *  connection alive with a slow-poll timer while the CPU sleeps.  Any button
+ *  press wakes the CPU in microseconds via GPIO interrupt.
  *
  * ─── Board / Toolchain ──────────────────────────────────────────────────────
- *  Board Manager URL : (Seeed XIAO MG24 board package)
- *  Board             : Seeed Studio XIAO MG24 (Matter)
- *  SDK               : Silicon Labs Matter (embedded in board package)
+ *  Board Manager : Seeed XIAO MG24 board package
+ *  Board         : Seeed Studio XIAO MG24 (Matter)
+ *  SDK           : Silicon Labs Matter (embedded in board package)
  *
  * SPDX-License-Identifier: MIT
  */
 
 #include <Matter.h>
-#include <MatterLightbulb.h>
 #include <MatterGenericSwitch.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -63,14 +72,6 @@ static constexpr uint8_t BTN_SCENE1    = D4;
 static constexpr uint8_t BTN_SCENE2    = D5;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Dimmer Configuration
-// ─────────────────────────────────────────────────────────────────────────────
-// Matter brightness uses the 0–254 range (Cluster Level Control).
-static constexpr uint8_t DIM_STEP =  25;   // brightness change per press (~10 % of 0–254 range)
-static constexpr uint8_t DIM_MIN  =   1;   // never fully off via dimmer
-static constexpr uint8_t DIM_MAX  = 254;
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Timing Constants
 // ─────────────────────────────────────────────────────────────────────────────
 static constexpr unsigned long DEBOUNCE_MS   =  50UL;   // GPIO debounce window
@@ -79,29 +80,33 @@ static constexpr unsigned long SLOW_POLL_S   =    5UL;  // Thread ICD slow poll
 static constexpr unsigned long FAST_POLL_S   =    1UL;  // Thread ICD fast poll
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Matter Endpoints
+// Matter Endpoints — one Generic Switch per button
+// Each appears as a separate button accessory in the Home app.
 // ─────────────────────────────────────────────────────────────────────────────
-MatterDimmableLightbulb light;   // EP1 — dimmable light control
-MatterGenericSwitch     scene1;  // EP2 — Scene 1 momentary trigger
-MatterGenericSwitch     scene2;  // EP3 — Scene 2 momentary trigger
+MatterGenericSwitch swOn;       // EP1 — ON button
+MatterGenericSwitch swOff;      // EP2 — OFF button
+MatterGenericSwitch swDimUp;    // EP3 — Dim Up button
+MatterGenericSwitch swDimDown;  // EP4 — Dim Down button
+MatterGenericSwitch swScene1;   // EP5 — Scene 1 button
+MatterGenericSwitch swScene2;   // EP6 — Scene 2 button
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Local Light State  (mirrors what is sent to / received from HomeKit)
-// ─────────────────────────────────────────────────────────────────────────────
-static uint8_t s_brightness = 127;   // initial brightness ~50 %
-static bool    s_isOn       = false;
+// Collect endpoints into an array parallel to the button array so
+// handleButtonPress() can dispatch without a switch statement.
+static MatterGenericSwitch* const s_endpoints[] = {
+  &swOn, &swOff, &swDimUp, &swDimDown, &swScene1, &swScene2
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Button State Machine
 // ─────────────────────────────────────────────────────────────────────────────
 struct ButtonState {
   uint8_t       pin;
-  bool          stableHigh;      // true = released (pull-up asserted)
-  bool          rawHigh;         // last raw digitalRead value
-  unsigned long lastChangeMs;    // time of last raw edge (for debounce)
+  bool          stableHigh;     // true = released (pull-up asserted)
+  bool          rawHigh;        // last raw digitalRead value
+  unsigned long lastChangeMs;   // time of last raw edge (for debounce)
 };
 
-// Order must match the case indices in handleButtonPress()
+// Order must match s_endpoints[] above.
 static ButtonState s_buttons[] = {
   { BTN_ON,       true, true, 0 },
   { BTN_OFF,      true, true, 0 },
@@ -113,16 +118,19 @@ static ButtonState s_buttons[] = {
 static constexpr uint8_t NUM_BUTTONS =
     static_cast<uint8_t>(sizeof(s_buttons) / sizeof(s_buttons[0]));
 
+static_assert(
+    sizeof(s_endpoints) / sizeof(s_endpoints[0]) == NUM_BUTTONS,
+    "s_endpoints and s_buttons must have the same length");
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Sleep / Wake Tracking
+// Sleep Tracking
 // ─────────────────────────────────────────────────────────────────────────────
-static unsigned long    s_lastActivityMs = 0;
+static unsigned long s_lastActivityMs = 0;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward Declarations
 // ─────────────────────────────────────────────────────────────────────────────
 static void handleButtonPress(uint8_t index);
-static void applyLightState();
 static void enterLightSleep();
 static void IRAM_ATTR wakeISR();   // ISR: no-op; CPU wakes by hardware interrupt
 
@@ -132,9 +140,7 @@ static void IRAM_ATTR wakeISR();   // ISR: no-op; CPU wakes by hardware interrup
 void setup()
 {
   Serial.begin(115200);
-  // Brief delay lets the UART settle and a host terminal connect before the
-  // first printout.  Keep short; battery devices should not waste time here.
-  delay(500);
+  delay(500);   // let UART settle before first print
   Serial.println();
   Serial.println("==============================================");
   Serial.println(" XIAO MG24 — 6-Button Wireless Smart Switch");
@@ -146,7 +152,7 @@ void setup()
   }
 
   // ── Matter ICD: register as sleepy end-device (SED) ─────────────────────
-  // These must be called BEFORE Matter.begin().
+  // Must be called BEFORE Matter.begin().
   Matter.setIcdMode(true);
   Matter.setIcdSlowPollingInterval(SLOW_POLL_S);
   Matter.setIcdFastPollingInterval(FAST_POLL_S);
@@ -155,17 +161,12 @@ void setup()
   Matter.begin();
 
   // ── Endpoint configuration ───────────────────────────────────────────────
-  light.begin();
-  scene1.begin();
-  scene2.begin();
-
-  light.setDeviceName("Wall Switch Light");
-  scene1.setDeviceName("Scene 1");
-  scene2.setDeviceName("Scene 2");
-
-  // Push initial state so HomeKit shows the correct values on first connect.
-  light.setOnOff(s_isOn);
-  light.setBrightness(s_brightness);
+  swOn.begin();       swOn.setDeviceName("ON");
+  swOff.begin();      swOff.setDeviceName("OFF");
+  swDimUp.begin();    swDimUp.setDeviceName("Dim Up");
+  swDimDown.begin();  swDimDown.setDeviceName("Dim Down");
+  swScene1.begin();   swScene1.setDeviceName("Scene 1");
+  swScene2.begin();   swScene2.setDeviceName("Scene 2");
 
   s_lastActivityMs = millis();
 
@@ -175,12 +176,13 @@ void setup()
     Serial.println("Device is NOT commissioned.");
     Serial.println("To add to HomeKit:");
     Serial.println("  1. Open the Apple Home app.");
-    Serial.println("  2. Tap  +  →  Add Accessory.");
+    Serial.println("  2. Tap  +  ->  Add Accessory.");
     Serial.println("  3. Scan the QR code on the device label, or choose");
     Serial.println("     'More Options' and enter the setup code manually.");
+    Serial.println("  6 button accessories will be added (ON, OFF, Dim Up,");
+    Serial.println("  Dim Down, Scene 1, Scene 2).  Create automations for");
+    Serial.println("  each one in the Home app to control your smart lights.");
     Serial.println();
-    // If the board package exposes a setup-code helper, print it here.
-    // Some SiLabs Arduino builds expose Matter.getSetupCode() / getQRCode().
 #if defined(MATTER_SETUP_CODE)
     Serial.print("Setup code : ");
     Serial.println(Matter.getSetupCode());
@@ -202,26 +204,6 @@ void loop()
   // ── Pump the Matter event loop ───────────────────────────────────────────
   Matter.loop();
 
-  // ── Sync HomeKit-initiated changes back to local state ───────────────────
-  // Siri commands, automations, or the Home app can change on/off or
-  // brightness independently.  Mirror those changes into our local variables
-  // so the dimmer buttons start from the correct baseline.
-  {
-    bool    remoteOn = light.getOnOff();
-    uint8_t remoteBr = light.getBrightness();
-
-    if (remoteOn != s_isOn || remoteBr != s_brightness) {
-      s_isOn       = remoteOn;
-      s_brightness = remoteBr;
-      s_lastActivityMs = millis();
-      Serial.print("[HomeKit] power=");
-      Serial.print(s_isOn ? "ON" : "OFF");
-      Serial.print("  brightness=");
-      Serial.print(map(s_brightness, 0, 254, 0, 100));
-      Serial.println('%');
-    }
-  }
-
   // ── Button polling with debounce ─────────────────────────────────────────
   unsigned long now = millis();
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
@@ -233,7 +215,7 @@ void loop()
       s_buttons[i].lastChangeMs = now;
     }
 
-    // Signal stable for DEBOUNCE_MS — check for press (HIGH→LOW transition)
+    // Signal stable for DEBOUNCE_MS — check for press (HIGH → LOW transition)
     if ((now - s_buttons[i].lastChangeMs) > DEBOUNCE_MS) {
       if (!raw && s_buttons[i].stableHigh) {
         // Falling edge confirmed: button just pressed
@@ -252,83 +234,25 @@ void loop()
 
 // ═════════════════════════════════════════════════════════════════════════════
 // handleButtonPress()
+// Fires a Matter InitialPress event on the endpoint matching this button.
+// HomeKit receives the event and executes any automation the user has assigned
+// to that button ("When <Button> is pressed → …").
 // ═════════════════════════════════════════════════════════════════════════════
 static void handleButtonPress(uint8_t index)
 {
-  switch (index) {
+  static const char* const names[] = {
+    "[BTN] ON",
+    "[BTN] OFF",
+    "[BTN] DIM UP",
+    "[BTN] DIM DOWN",
+    "[BTN] SCENE 1",
+    "[BTN] SCENE 2",
+  };
 
-    // ── ON ──────────────────────────────────────────────────────────────────
-    case 0:
-      Serial.println("[BTN] ON");
-      s_isOn = true;
-      applyLightState();
-      break;
-
-    // ── OFF ─────────────────────────────────────────────────────────────────
-    case 1:
-      Serial.println("[BTN] OFF");
-      s_isOn = false;
-      applyLightState();
-      break;
-
-    // ── Dimmer UP ────────────────────────────────────────────────────────────
-    case 2:
-      Serial.println("[BTN] DIM UP");
-      if (s_brightness <= DIM_MAX - DIM_STEP) {
-        s_brightness = static_cast<uint8_t>(s_brightness + DIM_STEP);
-      } else {
-        s_brightness = DIM_MAX;
-      }
-      s_isOn = true;   // dimming up implicitly turns the light on
-      applyLightState();
-      break;
-
-    // ── Dimmer DOWN ──────────────────────────────────────────────────────────
-    case 3:
-      Serial.println("[BTN] DIM DOWN");
-      if (s_brightness >= DIM_MIN + DIM_STEP) {
-        s_brightness = static_cast<uint8_t>(s_brightness - DIM_STEP);
-      } else {
-        s_brightness = DIM_MIN;
-      }
-      // Dimming down does NOT automatically turn off — HomeKit automations
-      // can handle the "turn off at minimum brightness" policy if desired.
-      applyLightState();
-      break;
-
-    // ── Scene 1 ──────────────────────────────────────────────────────────────
-    // Sends a Matter InitialPress event on EP2.
-    // In HomeKit: create an automation triggered by "Scene 1 is pressed".
-    case 4:
-      Serial.println("[BTN] SCENE 1 → HomeKit automation trigger");
-      scene1.sendInitialPressEvent();
-      break;
-
-    // ── Scene 2 ──────────────────────────────────────────────────────────────
-    case 5:
-      Serial.println("[BTN] SCENE 2 → HomeKit automation trigger");
-      scene2.sendInitialPressEvent();
-      break;
-
-    default:
-      break;
+  if (index < NUM_BUTTONS) {
+    Serial.println(names[index]);
+    s_endpoints[index]->sendInitialPressEvent();
   }
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-// applyLightState()
-// Writes the local on/off and brightness values to the Matter endpoint so
-// HomeKit (and any bound devices) receive the update.
-// ═════════════════════════════════════════════════════════════════════════════
-static void applyLightState()
-{
-  light.setOnOff(s_isOn);
-  light.setBrightness(s_brightness);
-  Serial.print("  → power=");
-  Serial.print(s_isOn ? "ON" : "OFF");
-  Serial.print("  brightness=");
-  Serial.print(map(s_brightness, 0, 254, 0, 100));
-  Serial.println('%');
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -339,55 +263,49 @@ static void applyLightState()
 // Why EM1 and not EM2/EM3/EM4?
 //   EM2 shuts down the HFXO (high-freq crystal oscillator).  The SiLabs
 //   Matter SDK keeps the Thread network interface running on HFXO; entering
-//   EM2 outside the SDK-managed sleep path would hang the radio and corrupt
+//   EM2 outside the SDK-managed sleep path hangs the radio and corrupts
 //   Thread state on the next wake-up.
 //
-//   EM3 additionally gates the LFXO, breaking the RTC used by the Matter
+//   EM3 additionally gates the LFXO, breaking the RTC used by Matter
 //   subscription timers.
 //
-//   EM4 is effectively a power-on reset — all RAM and peripheral state is
-//   lost.  Not appropriate for a continuously-connected Thread device.
+//   EM4 is effectively a power-on reset — all RAM and Thread credentials lost.
 //
-//   EM1 gates only the CPU core clock, leaving all peripherals (USART, GPIO
-//   interrupts, radio DMA) running.  Power consumption is typically 1–3 mA
-//   with the Thread radio in slow-poll ICD mode — acceptable for a LiPo-
-//   or AA-battery-powered wall switch.
+//   EM1 gates only the CPU core clock, leaving all peripherals (GPIO
+//   interrupts, radio DMA) running.  Power consumption is ~1–3 mA with the
+//   Thread radio in slow-poll ICD mode — acceptable for battery operation.
 //
 // Wake sources:
 //   • GPIO falling-edge interrupt on any button pin.
-//   • Thread ICD slow-poll timer (fires every SLOW_POLL_S seconds) — handled
-//     entirely inside Matter.sleep() / the radio driver, transparent to app.
+//   • Thread ICD slow-poll timer (every SLOW_POLL_S seconds) — handled inside
+//     Matter.sleep() / the radio driver, transparent to the application.
 // ═════════════════════════════════════════════════════════════════════════════
 static void enterLightSleep()
 {
-  Serial.println("[POWER] Entering EM1 light sleep…");
+  Serial.println("[POWER] Entering EM1 light sleep...");
   Serial.flush();   // drain UART FIFO before gating CPU clock
 
-  // Attach GPIO wake interrupts for all button pins.
-  // FALLING = button pressed (pull-up pin driven to GND).
+  // Attach GPIO wake interrupts (FALLING = button press to GND).
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     attachInterrupt(digitalPinToInterrupt(s_buttons[i].pin), wakeISR, FALLING);
   }
 
-  // sl_power_manager_sleep() (called internally by Matter.sleep()) requests
-  // the lowest energy mode that all registered requirements allow.  With
-  // Matter ICD configured and the radio stack running, the SDK keeps an EM1
-  // requirement active, so the call always resolves to EM1 on this platform.
+  // sl_power_manager_sleep() (called internally by Matter.sleep()) resolves to
+  // EM1 because the SDK holds an EM1 requirement while Thread is active.
   Matter.sleep();
 
   // ── Execution resumes here after wake ────────────────────────────────────
 
-  // Detach GPIO interrupts now that loop() handles buttons again.
+  // Detach GPIO interrupts — loop() handles buttons from here.
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     detachInterrupt(digitalPinToInterrupt(s_buttons[i].pin));
   }
 
-  // Reset the debounce timestamps to avoid spurious presses on first loop
-  // iteration after wake (the pin may still be LOW while the button is held).
+  // Re-anchor debounce state to avoid spurious presses if a button is still
+  // held when the CPU wakes.
   unsigned long wakeMs = millis();
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     s_buttons[i].lastChangeMs = wakeMs;
-    // Re-read the current pin state so the debouncer starts from reality.
     s_buttons[i].rawHigh    = (digitalRead(s_buttons[i].pin) == HIGH);
     s_buttons[i].stableHigh = s_buttons[i].rawHigh;
   }
@@ -399,14 +317,14 @@ static void enterLightSleep()
 
 // ═════════════════════════════════════════════════════════════════════════════
 // wakeISR()
-// Minimal GPIO interrupt service routine.
-// The CPU wakes automatically from EM1 when a GPIO interrupt fires; no
-// application-level action is needed inside the ISR itself.
-// Marked IRAM_ATTR to ensure the ISR lives in always-retained RAM — required
-// on SiLabs EFR32 cores so that cache misses cannot stall the ISR during EM1.
+// Minimal GPIO interrupt service routine.  The CPU wakes automatically from
+// EM1 when a GPIO interrupt fires; no application-level action is required.
+// Marked IRAM_ATTR so the ISR lives in always-retained RAM (required on
+// SiLabs EFR32 cores to prevent cache-miss stalls during EM1).
 // ═════════════════════════════════════════════════════════════════════════════
 static void IRAM_ATTR wakeISR()
 {
-  // No-op: waking the CPU from EM1 is handled entirely by the hardware
-  // interrupt mechanism.  Button state is re-read in loop() after wake.
+  // No-op: hardware interrupt mechanism handles CPU wake from EM1.
+  // Button state is re-read in loop() after wake.
 }
+
