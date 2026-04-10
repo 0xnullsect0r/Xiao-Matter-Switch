@@ -28,6 +28,11 @@ All 6 buttons work the same way in HomeKit — each one is a configurable button
 
 ---
 
+## Hardware Shell
+I would reccomend using this [Macro Pad](https://www.thingiverse.com/thing:2206672) to hold everything. This should be big enough to hold most everything, including a battery depending on which. 
+
+---
+
 ## Hardware Requirements
 
 | Item | Notes |
