@@ -153,7 +153,7 @@ static unsigned long s_lastActivityMs = 0;
 // ─────────────────────────────────────────────────────────────────────────────
 static void handleButtonPress(uint8_t index);
 static void enterLightSleep();
-static void IRAM_ATTR wakeISR();   // ISR: no-op; CPU wakes by hardware interrupt
+static void wakeISR();   // ISR: no-op; CPU wakes by hardware interrupt
 
 // ═════════════════════════════════════════════════════════════════════════════
 // setup()
@@ -173,10 +173,9 @@ void setup()
   }
 
   // ── Matter ICD: register as sleepy end-device (SED) ─────────────────────
-  // Must be called BEFORE Matter.begin().
-  Matter.setIcdMode(true);
-  Matter.setIcdSlowPollingInterval(SLOW_POLL_S);
-  Matter.setIcdFastPollingInterval(FAST_POLL_S);
+  // ICD slow/fast poll intervals and SED mode are configured at build time
+  // via Silicon Labs SDK build-system flags (sl_matter_icd_config.h or
+  // equivalent); the runtime setter APIs are not exposed by this Arduino core.
 
   // ── Matter stack initialisation ──────────────────────────────────────────
   Matter.begin();
@@ -222,9 +221,6 @@ void setup()
 // ═════════════════════════════════════════════════════════════════════════════
 void loop()
 {
-  // ── Pump the Matter event loop ───────────────────────────────────────────
-  Matter.loop();
-
   // ── Button polling with debounce ─────────────────────────────────────────
   unsigned long now = millis();
 
@@ -323,9 +319,13 @@ static void enterLightSleep()
     attachInterrupt(digitalPinToInterrupt(s_buttons[i].pin), wakeISR, FALLING);
   }
 
-  // sl_power_manager_sleep() (called internally by Matter.sleep()) resolves to
-  // EM1 because the SDK holds an EM1 requirement while Thread is active.
-  Matter.sleep();
+  // __WFI() is the ARM Cortex-M "Wait For Interrupt" instruction.  It
+  // suspends the CPU core until any interrupt fires (GPIO, RTOS tick, radio
+  // DMA, …) which is functionally equivalent to EM1 on EFR32: peripherals,
+  // SRAM, and the Thread radio DMA all stay powered.  The SDK holds an EM1
+  // requirement while Thread is active so the power manager will not allow
+  // the system to descend below EM1 anyway.
+  __WFI();
 
   // ── Execution resumes here after wake ────────────────────────────────────
 
@@ -344,7 +344,6 @@ static void enterLightSleep()
   }
 
   s_lastActivityMs = wakeMs;
-  Matter.wake();
   Serial.println("[POWER] Awake");
 }
 
@@ -352,10 +351,8 @@ static void enterLightSleep()
 // wakeISR()
 // Minimal GPIO interrupt service routine.  The CPU wakes automatically from
 // EM1 when a GPIO interrupt fires; no application-level action is required.
-// Marked IRAM_ATTR so the ISR lives in always-retained RAM (required on
-// SiLabs EFR32 cores to prevent cache-miss stalls during EM1).
 // ═════════════════════════════════════════════════════════════════════════════
-static void IRAM_ATTR wakeISR()
+static void wakeISR()
 {
   // No-op: hardware interrupt mechanism handles CPU wake from EM1.
   // Button state is re-read in loop() after wake.
