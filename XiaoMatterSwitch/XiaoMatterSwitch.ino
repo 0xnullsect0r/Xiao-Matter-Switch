@@ -24,6 +24,11 @@
 #define BTN_SCENE1    D4
 #define BTN_SCENE2    D5
 
+// Built-in LED (XIAO)
+#ifndef LED_BUILTIN
+#define LED_BUILTIN LED_BUILTIN
+#endif
+
 // ── Timing ───────────────────────────────────────────────────────────────────
 #define DEBOUNCE_MS   50UL    // debounce window
 #define PULSE_MS      150UL   // momentary ON-pulse width
@@ -74,6 +79,10 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("Matter 6-button switch");
+
+  // Keep the built-in LED always ON
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
 
   // Configure buttons as input with internal pull-up (active-low)
   for (int i = 0; i < NUM_BUTTONS; i++) {
@@ -131,6 +140,9 @@ void setup()
 // =============================================================================
 void loop()
 {
+  // Re-assert LED ON (in case any library code changes it)
+  digitalWrite(LED_BUILTIN, HIGH);
+
   unsigned long now = millis();
 
   // Reset momentary pulses after PULSE_MS
