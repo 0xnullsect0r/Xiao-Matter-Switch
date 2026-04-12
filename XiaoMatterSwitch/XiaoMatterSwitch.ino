@@ -101,6 +101,7 @@ static unsigned long     factory_reset_hold_since_ms = 0;
 static void handle_button_press(uint8_t index);
 static void handle_button_release(uint8_t index);
 static void check_factory_reset(unsigned long now);
+static void poll_reset_gesture();
 static void enter_light_sleep();
 static void wake_isr();
 
@@ -148,17 +149,20 @@ void setup()
   }
 
   while (!Matter.isDeviceCommissioned()) {
+    poll_reset_gesture();
     delay(200);
   }
 
   Serial.println("Waiting for Thread network...");
   while (!Matter.isDeviceThreadConnected()) {
+    poll_reset_gesture();
     delay(200);
   }
   Serial.println("Connected to Thread network");
 
   Serial.println("Waiting for Matter device discovery...");
   while (!matter_switch_on.is_online()) {
+    poll_reset_gesture();
     delay(200);
   }
   Serial.println("Matter switch device is now online");
@@ -254,6 +258,35 @@ static void handle_button_release(uint8_t index)
   // construction and releases it on destruction, even if an exception is thrown.
   chip::DeviceLayer::StackLock lock;
   chip::app::Clusters::SwitchServer::Instance().OnShortRelease(eid, 1 /* previousPosition */);
+}
+
+// -----------------------------------------------------------------------------
+// poll_reset_gesture() — lightweight button poll for use inside setup() loops
+//
+// The three blocking while-loops in setup() prevent loop() from ever running,
+// so the factory-reset gesture would be undetectable while waiting for
+// commissioning, Thread connection, or device discovery.  This helper updates
+// the debounce state for BTN_ON (index 0) and BTN_OFF (index 1) only — the
+// two buttons needed for the gesture — then calls check_factory_reset() so
+// the 10-second hold can fire at any stage, even before pairing completes.
+// btn_last_change_ms[] is initialised to 0 in setup(), so the debounce window
+// will already have elapsed on the first call and the stable state is set from
+// the first digitalRead.
+// -----------------------------------------------------------------------------
+static void poll_reset_gesture()
+{
+  unsigned long now = millis();
+  for (int i = 0; i < 2; i++) {  // BTN_ON (0) and BTN_OFF (1) only
+    bool raw = (digitalRead(button_pins[i]) == HIGH);
+    if (raw != btn_raw_high[i]) {
+      btn_raw_high[i]       = raw;
+      btn_last_change_ms[i] = now;
+    }
+    if ((now - btn_last_change_ms[i]) > DEBOUNCE_MS) {
+      btn_stable_high[i] = raw;
+    }
+  }
+  check_factory_reset(now);
 }
 
 // -----------------------------------------------------------------------------
