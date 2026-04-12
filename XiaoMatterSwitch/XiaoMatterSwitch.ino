@@ -24,11 +24,6 @@
 #define BTN_SCENE1    D4
 #define BTN_SCENE2    D5
 
-// Built-in LED (XIAO)
-#ifndef LED_BUILTIN
-#define LED_BUILTIN LED_BUILTIN
-#endif
-
 // ── Timing ───────────────────────────────────────────────────────────────────
 #define DEBOUNCE_MS   50UL    // debounce window
 #define PULSE_MS      150UL   // momentary ON-pulse width
@@ -80,9 +75,9 @@ void setup()
   Serial.begin(115200);
   Serial.println("Matter 6-button switch");
 
-  // Keep the built-in LED always ON
+  // Built-in LED: force it ON (do not expose as a Matter bulb)
   pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
+  digitalWrite(LED_BUILTIN, LED_BUILTIN_ACTIVE);
 
   // Configure buttons as input with internal pull-up (active-low)
   for (int i = 0; i < NUM_BUTTONS; i++) {
@@ -140,8 +135,8 @@ void setup()
 // =============================================================================
 void loop()
 {
-  // Re-assert LED ON (in case any library code changes it)
-  digitalWrite(LED_BUILTIN, HIGH);
+  // Keep LED always ON (re-assert in case anything else changes it)
+  digitalWrite(LED_BUILTIN, LED_BUILTIN_ACTIVE);
 
   unsigned long now = millis();
 
@@ -193,11 +188,6 @@ static void handle_button_press(uint8_t index)
 
 // -----------------------------------------------------------------------------
 // enter_light_sleep() — block in EM1 until a button GPIO interrupt fires
-//
-// EM1 is the only safe sleep level on the XIAO MG24:
-//   EM2/EM3 disable the HFXO needed by the Thread radio and corrupt its state.
-//   EM4 is a full reset — all RAM and Thread credentials are lost.
-//   EM1 gates only the CPU clock; GPIO interrupts and radio DMA stay active.
 // -----------------------------------------------------------------------------
 static void enter_light_sleep()
 {
@@ -211,10 +201,8 @@ static void enter_light_sleep()
     attachInterrupt(digitalPinToInterrupt(button_pins[i]), wake_isr, FALLING);
   }
 
-  // Clamp power manager to EM1 so the Thread radio (HFXO) stays alive
   sl_power_manager_add_em_requirement(SL_POWER_MANAGER_EM1);
 
-  // Yield this FreeRTOS task — tickless-idle engages and the CPU enters EM1
   xSemaphoreTake(wake_semaphore, portMAX_DELAY);
 
   sl_power_manager_remove_em_requirement(SL_POWER_MANAGER_EM1);
@@ -223,7 +211,6 @@ static void enter_light_sleep()
     detachInterrupt(digitalPinToInterrupt(button_pins[i]));
   }
 
-  // Re-anchor debounce state so held buttons don't cause spurious presses
   unsigned long wake_ms = millis();
   for (int i = 0; i < NUM_BUTTONS; i++) {
     btn_last_change_ms[i] = wake_ms;
