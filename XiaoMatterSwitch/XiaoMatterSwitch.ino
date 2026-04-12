@@ -85,9 +85,9 @@ static constexpr uint8_t BTN_SCENE2    = D5;
 // ─────────────────────────────────────────────────────────────────────────────
 // Timing Constants
 // ─────────────────────────────────────────────────────────────────────────────
-static constexpr unsigned long DEBOUNCE_MS   =  50UL;   // GPIO debounce window
-static constexpr unsigned long PULSE_MS      = 150UL;   // momentary ON-pulse width
-static constexpr unsigned long AWAKE_MS      = 3000UL;  // idle → sleep timeout
+static constexpr unsigned long DEBOUNCE_MS   =  50UL;    // GPIO debounce window
+static constexpr unsigned long PULSE_MS      = 150UL;    // momentary ON-pulse width
+static constexpr unsigned long AWAKE_MS      = 10000UL;  // idle → sleep timeout (10 seconds)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Matter Endpoints — one MatterSwitch per button
@@ -328,7 +328,7 @@ static void handleButtonPress(uint8_t index)
 //   • GPIO falling-edge interrupt on any button pin — wakeISR() gives the
 //     semaphore, unblocking this task.
 //   • Thread ICD slow-poll timer — handled transparently by the radio driver.
-// ═════════════════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════���══════
 static void enterLightSleep()
 {
   Serial.println("[POWER] Entering EM1 light sleep...");
@@ -393,4 +393,3 @@ static void wakeISR()
   xSemaphoreGiveFromISR(s_wakeSemaphore, &xHigherPriorityTaskWoken);
   portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
-
