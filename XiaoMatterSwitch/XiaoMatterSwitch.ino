@@ -213,14 +213,10 @@ void setup()
     Serial.println("  Dim Down, Scene 1, Scene 2).  Create automations for");
     Serial.println("  each one in the Home app to control your smart lights.");
     Serial.println();
-#if defined(MATTER_SETUP_CODE)
     Serial.print("Setup code : ");
     Serial.println(Matter.getSetupCode());
-#endif
-#if defined(MATTER_QR_CODE_URL)
     Serial.print("QR URL     : ");
     Serial.println(Matter.getQRCodeUrl());
-#endif
   } else {
     Serial.println("Device is commissioned and ready.");
   }
