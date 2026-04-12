@@ -53,10 +53,11 @@ public:
 // ── Timing ───────────────────────────────────────────────────────────────────
 #define DEBOUNCE_MS              50UL   // debounce window (ms)
 #define AWAKE_MS             10000UL   // idle time before entering EM1 sleep
-#define FACTORY_RESET_HOLD_MS 10000UL  // hold ON+OFF for this long to factory-reset
-#define FACTORY_RESET_BLINK_MS  300UL  // LED blink interval during countdown
+#define FACTORY_RESET_CONFIRM_MS  500UL  // both buttons must be held this long before the 10-s countdown begins
+#define FACTORY_RESET_HOLD_MS   10000UL  // hold ON+OFF for this long to factory-reset
+#define FACTORY_RESET_BLINK_MS    300UL  // LED blink interval during countdown
 #define FACTORY_RESET_FLASH_COUNT   5  // number of confirmation flashes on trigger
-#define FACTORY_RESET_FLASH_MS     80  // on/off duration (ms) of each flash
+#define FACTORY_RESET_FLASH_MS     80UL  // on/off duration (ms) of each flash
 
 // ── Matter endpoints ─────────────────────────────────────────────────────────
 MatterSwitchWithId matter_switch_on;
@@ -94,7 +95,12 @@ static unsigned long     last_activity_ms            = 0;
 static SemaphoreHandle_t wake_semaphore              = nullptr;
 
 // ── Factory-reset gesture tracking ───────────────────────────────────────────
-// 0 = gesture not started; non-zero = millis() when both buttons were first held
+// factory_reset_both_held_ms: millis() when both buttons first became held together
+//   (0 = not both held).  Used to enforce FACTORY_RESET_CONFIRM_MS before the
+//   10-s countdown starts, so a quick sequential press of ON then OFF is ignored.
+// factory_reset_hold_since_ms: millis() when the confirmed 10-s countdown started
+//   (0 = countdown not running).
+static unsigned long     factory_reset_both_held_ms  = 0;
 static unsigned long     factory_reset_hold_since_ms = 0;
 
 // ── Forward declarations ──────────────────────────────────────────────────────
@@ -294,7 +300,9 @@ static void poll_reset_gesture()
 //
 // btn_stable_high[i] is false while button i is confirmed-pressed (active-low).
 // The gesture is: both buttons confirmed-held at the same time for 10 seconds.
-// The LED blinks at 300 ms during the countdown to give visible feedback.
+// To prevent an accidental quick sequential press of ON then OFF from triggering
+// the countdown, both buttons must be held continuously for FACTORY_RESET_CONFIRM_MS
+// before the 10-s countdown and LED blinking begin.
 // After 10 s the device erases its fabric + Thread credentials and reboots.
 // -----------------------------------------------------------------------------
 static void check_factory_reset(unsigned long now)
@@ -308,6 +316,18 @@ static void check_factory_reset(unsigned long now)
       Serial.println("Factory reset cancelled");
       digitalWrite(LED_BUILTIN, LED_BUILTIN_ACTIVE); // restore LED
     }
+    factory_reset_both_held_ms = 0;
+    return;
+  }
+
+  // Record when both buttons first became simultaneously held
+  if (factory_reset_both_held_ms == 0) {
+    factory_reset_both_held_ms = now;
+  }
+
+  // Ignore until both buttons have been held long enough to confirm intent.
+  // This silently discards quick sequential presses (e.g. tap ON then tap OFF).
+  if ((now - factory_reset_both_held_ms) < FACTORY_RESET_CONFIRM_MS) {
     return;
   }
 
