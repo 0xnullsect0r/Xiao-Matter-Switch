@@ -203,7 +203,8 @@ void setup()
   // ── Commissioning guidance ───────────────────────────────────────────────
   if (!Matter.isDeviceCommissioned()) {
     Serial.println();
-    Serial.println("Device is NOT commissioned.");
+    Serial.println("Matter device is not commissioned.");
+    Serial.println("Commission it to your Matter hub with the manual pairing code or QR code.");
     Serial.println("To add to HomeKit:");
     Serial.println("  1. Open the Apple Home app.");
     Serial.println("  2. Tap  +  ->  Add Accessory.");
@@ -213,13 +214,27 @@ void setup()
     Serial.println("  Dim Down, Scene 1, Scene 2).  Create automations for");
     Serial.println("  each one in the Home app to control your smart lights.");
     Serial.println();
-    Serial.print("Setup code : ");
-    Serial.println(Matter.getSetupCode());
-    Serial.print("QR URL     : ");
-    Serial.println(Matter.getQRCodeUrl());
-  } else {
-    Serial.println("Device is commissioned and ready.");
+    Serial.print("Manual pairing code: ");
+    Serial.println(Matter.getManualPairingCode());
+    Serial.print("QR code URL: ");
+    Serial.println(Matter.getOnboardingQRCodeUrl());
   }
+
+  while (!Matter.isDeviceCommissioned()) {
+    delay(200);
+  }
+
+  Serial.println("Waiting for Thread network...");
+  while (!Matter.isDeviceThreadConnected()) {
+    delay(200);
+  }
+  Serial.println("Connected to Thread network");
+
+  Serial.println("Waiting for Matter device discovery...");
+  while (!swOn.is_online()) {
+    delay(200);
+  }
+  Serial.println("Matter device is now online");
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
