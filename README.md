@@ -8,18 +8,20 @@ A battery-powered, wireless 6-button smart **switch controller** for Apple HomeK
 
 ## How It Works
 
-Each of the 6 buttons is exposed to HomeKit as a separate **Generic Switch** (button) accessory.  When you press a button, the device sends a Matter "press" event to HomeKit.  You then wire up automations in the Home app:
+Each of the 6 buttons is exposed to HomeKit as a separate **momentary Matter switch** accessory.  When you press a button, the device briefly sets the corresponding switch endpoint **ON** (for ~150 ms), then automatically resets it to **OFF**.  You create automations in the Home app that trigger when each switch **turns on**:
+
+> **Note:** The Silicon Labs Arduino core (`SiliconLabs/hardware/silabs`) provides `MatterSwitch` but does **not** expose the Matter Generic Switch cluster.  Endpoints are therefore implemented as momentary switches — each press produces a short ON pulse so HomeKit automations can reliably detect the "turns on" transition.
 
 | Button | Matter Endpoint | Suggested HomeKit Automation |
 |--------|----------------|------------------------------|
-| ON | EP1 — Generic Switch | Turn on [your lights] |
-| OFF | EP2 — Generic Switch | Turn off [your lights] |
-| Dim Up | EP3 — Generic Switch | Increase brightness of [your lights] |
-| Dim Down | EP4 — Generic Switch | Decrease brightness of [your lights] |
-| Scene 1 | EP5 — Generic Switch | Activate a scene / run a shortcut / anything |
-| Scene 2 | EP6 — Generic Switch | Another scene or automation |
+| ON | EP1 — Matter Switch | Turn on [your lights] |
+| OFF | EP2 — Matter Switch | Turn off [your lights] |
+| Dim Up | EP3 — Matter Switch | Increase brightness of [your lights] |
+| Dim Down | EP4 — Matter Switch | Decrease brightness of [your lights] |
+| Scene 1 | EP5 — Matter Switch | Activate a scene / run a shortcut / anything |
+| Scene 2 | EP6 — Matter Switch | Another scene or automation |
 
-All 6 buttons work the same way in HomeKit — each one is a configurable button you assign freely in automations.
+All 6 buttons work the same way in HomeKit — each one is a configurable switch you assign freely in automations.  Set the automation trigger to **"turns on"** (not "is pressed").
 
 ### Power
 - **EM1 light sleep** between button presses (see [Sleep Strategy](#sleep-strategy)).
@@ -103,10 +105,10 @@ Internal pull-ups are enabled in firmware — no external resistors needed.
 
 3. Open the **Home** app on your iPhone/iPad → tap **+** → **Add Accessory**.
 4. Scan the QR code printed on the XIAO MG24 board or on the packaging, **or** choose *More Options* and type the numeric setup code.
-5. Follow the on-screen prompts.  **Six** button accessories will be added:
+5. Follow the on-screen prompts.  **Six** switch accessories will be added:
    - **ON**, **OFF**, **Dim Up**, **Dim Down**, **Scene 1**, **Scene 2**
 
-> **Tip:** Assign all accessories to the same room as the lights they will control, then set up automations for each button.
+> **Tip:** Assign all accessories to the same room as the lights they will control, then set up automations for each switch (trigger: "turns on").
 
 ---
 
@@ -116,8 +118,8 @@ Do this for every button you want to use:
 
 1. In the **Home** app, open **Automations → +**.
 2. Choose **An Accessory is Controlled**.
-3. Select the button (e.g., **ON**).
-4. Trigger: **"is pressed"**.
+3. Select the switch (e.g., **ON**).
+4. Trigger: **"turns on"**.
 5. Add the action — for example:
    - **ON** → Turn on your living room lights.
    - **OFF** → Turn off your living room lights.

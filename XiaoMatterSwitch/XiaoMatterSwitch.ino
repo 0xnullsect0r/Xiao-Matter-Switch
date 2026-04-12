@@ -4,21 +4,29 @@
  *          HomeKit integration via Matter over Thread (Silicon Labs SDK)
  *
  * This device is a SWITCH CONTROLLER ONLY — it has no lights of its own.
- * Every button press fires a Matter Generic Switch "InitialPress" event on its
- * own endpoint.  In HomeKit you create automations triggered by each button
- * ("When <Button> is pressed → do something") to control whatever smart lights
- * or other accessories you choose.
+ * Every button press produces a momentary ON pulse on the corresponding Matter
+ * switch endpoint.  In HomeKit you create automations triggered by the switch
+ * turning on ("When <Switch> turns on → do something") to control whatever
+ * smart lights or other accessories you choose.
+ *
+ * ─── Implementation Note ────────────────────────────────────────────────────
+ *  The Silicon Labs Arduino core (SiliconLabs/hardware/silabs) provides
+ *  MatterSwitch (MatterSwitch.h) but does NOT expose the Generic Switch
+ *  cluster.  Therefore each endpoint is implemented as a momentary Matter
+ *  switch: on button press the endpoint is set ON, then automatically reset
+ *  to OFF after PULSE_MS milliseconds.  HomeKit automations should trigger
+ *  on the "turns on" event.
  *
  * ─── Matter Endpoints ───────────────────────────────────────────────────────
- *  EP 1  Generic Switch  →  ON button
- *  EP 2  Generic Switch  →  OFF button
- *  EP 3  Generic Switch  →  Dim Up button
- *  EP 4  Generic Switch  →  Dim Down button
- *  EP 5  Generic Switch  →  Scene 1 button  (configure freely in HomeKit)
- *  EP 6  Generic Switch  →  Scene 2 button  (configure freely in HomeKit)
+ *  EP 1  Matter Switch  →  ON button
+ *  EP 2  Matter Switch  →  OFF button
+ *  EP 3  Matter Switch  →  Dim Up button
+ *  EP 4  Matter Switch  →  Dim Down button
+ *  EP 5  Matter Switch  →  Scene 1 button  (configure freely in HomeKit)
+ *  EP 6  Matter Switch  →  Scene 2 button  (configure freely in HomeKit)
  *
- *  Each endpoint appears as a separate "button" accessory in the Home app.
- *  Assign automations to each button independently — e.g.:
+ *  Each endpoint appears as a separate switch accessory in the Home app.
+ *  Assign automations to each switch independently — trigger on "turns on":
  *    ON       → Turn on [your lights]
  *    OFF      → Turn off [your lights]
  *    Dim Up   → Increase brightness of [your lights]
@@ -54,12 +62,13 @@
  *  Board Manager : Seeed XIAO MG24 board package
  *  Board         : Seeed Studio XIAO MG24 (Matter)
  *  SDK           : Silicon Labs Matter (embedded in board package)
+ *                  SiliconLabs/hardware/silabs — uses MatterSwitch.h
  *
  * SPDX-License-Identifier: MIT
  */
 
 #include <Matter.h>
-#include <MatterGenericSwitch.h>
+#include <MatterSwitch.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pin Definitions  (XIAO MG24 silk-screen labels)
@@ -75,24 +84,27 @@ static constexpr uint8_t BTN_SCENE2    = D5;
 // Timing Constants
 // ─────────────────────────────────────────────────────────────────────────────
 static constexpr unsigned long DEBOUNCE_MS   =  50UL;   // GPIO debounce window
+static constexpr unsigned long PULSE_MS      = 150UL;   // momentary ON-pulse width
 static constexpr unsigned long AWAKE_MS      = 3000UL;  // idle → sleep timeout
 static constexpr unsigned long SLOW_POLL_S   =    5UL;  // Thread ICD slow poll
 static constexpr unsigned long FAST_POLL_S   =    1UL;  // Thread ICD fast poll
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Matter Endpoints — one Generic Switch per button
-// Each appears as a separate button accessory in the Home app.
+// Matter Endpoints — one MatterSwitch per button
+// Each appears as a separate switch accessory in the Home app.
+// Note: The Silicon Labs Arduino core does not expose the Generic Switch
+// cluster; endpoints are implemented as momentary switches (ON pulse → OFF).
 // ─────────────────────────────────────────────────────────────────────────────
-MatterGenericSwitch swOn;       // EP1 — ON button
-MatterGenericSwitch swOff;      // EP2 — OFF button
-MatterGenericSwitch swDimUp;    // EP3 — Dim Up button
-MatterGenericSwitch swDimDown;  // EP4 — Dim Down button
-MatterGenericSwitch swScene1;   // EP5 — Scene 1 button
-MatterGenericSwitch swScene2;   // EP6 — Scene 2 button
+MatterSwitch swOn;       // EP1 — ON button
+MatterSwitch swOff;      // EP2 — OFF button
+MatterSwitch swDimUp;    // EP3 — Dim Up button
+MatterSwitch swDimDown;  // EP4 — Dim Down button
+MatterSwitch swScene1;   // EP5 — Scene 1 button
+MatterSwitch swScene2;   // EP6 — Scene 2 button
 
 // Collect endpoints into an array parallel to the button array so
 // handleButtonPress() can dispatch without a switch statement.
-static MatterGenericSwitch* const s_endpoints[] = {
+static MatterSwitch* const s_endpoints[] = {
   &swOn, &swOff, &swDimUp, &swDimDown, &swScene1, &swScene2
 };
 
@@ -121,6 +133,15 @@ static constexpr uint8_t NUM_BUTTONS =
 static_assert(
     sizeof(s_endpoints) / sizeof(s_endpoints[0]) == NUM_BUTTONS,
     "s_endpoints and s_buttons must have the same length");
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Momentary Pulse State Machine
+// When a button is pressed the corresponding endpoint is set ON.  After
+// PULSE_MS milliseconds loop() resets it to OFF so HomeKit automations
+// trigger reliably on each press.
+// ─────────────────────────────────────────────────────────────────────────────
+static bool          s_pulsePending[NUM_BUTTONS] = {};
+static unsigned long s_pulseStartMs[NUM_BUTTONS] = {};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sleep Tracking
@@ -161,12 +182,12 @@ void setup()
   Matter.begin();
 
   // ── Endpoint configuration ───────────────────────────────────────────────
-  swOn.begin();       swOn.setDeviceName("ON");
-  swOff.begin();      swOff.setDeviceName("OFF");
-  swDimUp.begin();    swDimUp.setDeviceName("Dim Up");
-  swDimDown.begin();  swDimDown.setDeviceName("Dim Down");
-  swScene1.begin();   swScene1.setDeviceName("Scene 1");
-  swScene2.begin();   swScene2.setDeviceName("Scene 2");
+  swOn.begin();
+  swOff.begin();
+  swDimUp.begin();
+  swDimDown.begin();
+  swScene1.begin();
+  swScene2.begin();
 
   s_lastActivityMs = millis();
 
@@ -179,7 +200,7 @@ void setup()
     Serial.println("  2. Tap  +  ->  Add Accessory.");
     Serial.println("  3. Scan the QR code on the device label, or choose");
     Serial.println("     'More Options' and enter the setup code manually.");
-    Serial.println("  6 button accessories will be added (ON, OFF, Dim Up,");
+    Serial.println("  6 switch accessories will be added (ON, OFF, Dim Up,");
     Serial.println("  Dim Down, Scene 1, Scene 2).  Create automations for");
     Serial.println("  each one in the Home app to control your smart lights.");
     Serial.println();
@@ -206,6 +227,15 @@ void loop()
 
   // ── Button polling with debounce ─────────────────────────────────────────
   unsigned long now = millis();
+
+  // ── Reset momentary switch pulses after PULSE_MS ─────────────────────────
+  for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
+    if (s_pulsePending[i] && (now - s_pulseStartMs[i]) >= PULSE_MS) {
+      s_endpoints[i]->set_state(false);
+      s_pulsePending[i] = false;
+    }
+  }
+
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     bool raw = (digitalRead(s_buttons[i].pin) == HIGH);  // true = released
 
@@ -234,9 +264,10 @@ void loop()
 
 // ═════════════════════════════════════════════════════════════════════════════
 // handleButtonPress()
-// Fires a Matter InitialPress event on the endpoint matching this button.
-// HomeKit receives the event and executes any automation the user has assigned
-// to that button ("When <Button> is pressed → …").
+// Initiates a momentary ON pulse on the MatterSwitch endpoint matching this
+// button.  The endpoint is set ON immediately; loop() will reset it to OFF
+// after PULSE_MS milliseconds.  HomeKit automations should be triggered by
+// the switch "turning on" event.
 // ═════════════════════════════════════════════════════════════════════════════
 static void handleButtonPress(uint8_t index)
 {
@@ -251,7 +282,9 @@ static void handleButtonPress(uint8_t index)
 
   if (index < NUM_BUTTONS) {
     Serial.println(names[index]);
-    s_endpoints[index]->sendInitialPressEvent();
+    s_endpoints[index]->set_state(true);
+    s_pulseStartMs[index] = millis();
+    s_pulsePending[index] = true;
   }
 }
 
