@@ -69,6 +69,8 @@
 
 #include <Matter.h>
 #include <MatterSwitch.h>
+#include "sl_power_manager.h"  // sl_power_manager_add/remove_em_requirement
+#include <semphr.h>            // FreeRTOS binary semaphore for task-blocking sleep
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Pin Definitions  (XIAO MG24 silk-screen labels)
@@ -86,8 +88,6 @@ static constexpr uint8_t BTN_SCENE2    = D5;
 static constexpr unsigned long DEBOUNCE_MS   =  50UL;   // GPIO debounce window
 static constexpr unsigned long PULSE_MS      = 150UL;   // momentary ON-pulse width
 static constexpr unsigned long AWAKE_MS      = 3000UL;  // idle → sleep timeout
-static constexpr unsigned long SLOW_POLL_S   =    5UL;  // Thread ICD slow poll
-static constexpr unsigned long FAST_POLL_S   =    1UL;  // Thread ICD fast poll
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Matter Endpoints — one MatterSwitch per button
@@ -146,14 +146,17 @@ static unsigned long s_pulseStartMs[NUM_BUTTONS] = {};
 // ─────────────────────────────────────────────────────────────────────────────
 // Sleep Tracking
 // ─────────────────────────────────────────────────────────────────────────────
-static unsigned long s_lastActivityMs = 0;
+static unsigned long     s_lastActivityMs  = 0;
+// Binary semaphore given by wakeISR(); enterLightSleep() blocks on it so the
+// FreeRTOS task truly yields and tickless-idle can engage EM1.
+static SemaphoreHandle_t s_wakeSemaphore   = nullptr;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Forward Declarations
 // ─────────────────────────────────────────────────────────────────────────────
 static void handleButtonPress(uint8_t index);
 static void enterLightSleep();
-static void wakeISR();   // ISR: no-op; CPU wakes by hardware interrupt
+static void wakeISR();   // ISR: gives s_wakeSemaphore to unblock sleeping task
 
 // ═════════════════════════════════════════════════════════════════════════════
 // setup()
@@ -189,6 +192,13 @@ void setup()
   swScene2.begin();
 
   s_lastActivityMs = millis();
+
+  // ── Wake semaphore ───────────────────────────────────────────────────────
+  s_wakeSemaphore = xSemaphoreCreateBinary();
+  if (s_wakeSemaphore == nullptr) {
+    Serial.println("[ERROR] Failed to create wake semaphore — halting.");
+    while (true) { /* halt: heap exhausted, device unusable */ }
+  }
 
   // ── Commissioning guidance ───────────────────────────────────────────────
   if (!Matter.isDeviceCommissioned()) {
@@ -304,28 +314,49 @@ static void handleButtonPress(uint8_t index)
 //   interrupts, radio DMA) running.  Power consumption is ~1–3 mA with the
 //   Thread radio in slow-poll ICD mode — acceptable for battery operation.
 //
+// Sleep mechanism:
+//   An explicit EM1 requirement is added via sl_power_manager before blocking,
+//   guaranteeing the power manager cannot descend below EM1 even if the Thread
+//   stack has not yet registered its own EM1 requirement (e.g. during early
+//   boot or commissioning).  The loop task then blocks on a FreeRTOS binary
+//   semaphore, yielding to the scheduler so FreeRTOS tickless-idle can engage
+//   and allow the CPU to enter EM1.  Calling bare __WFI() from an active task
+//   is NOT used because it returns on every scheduler tick (~1 ms), preventing
+//   any real sleep.
+//
 // Wake sources:
-//   • GPIO falling-edge interrupt on any button pin.
-//   • Thread ICD slow-poll timer (every SLOW_POLL_S seconds) — handled inside
-//     Matter.sleep() / the radio driver, transparent to the application.
+//   • GPIO falling-edge interrupt on any button pin — wakeISR() gives the
+//     semaphore, unblocking this task.
+//   • Thread ICD slow-poll timer — handled transparently by the radio driver.
 // ═════════════════════════════════════════════════════════════════════════════
 static void enterLightSleep()
 {
   Serial.println("[POWER] Entering EM1 light sleep...");
-  Serial.flush();   // drain UART FIFO before gating CPU clock
+  Serial.flush();   // drain UART FIFO before CPU clock is gated
+
+  // Drain any stale semaphore token so we don't return immediately.
+  if (s_wakeSemaphore == nullptr) { return; }
+  xSemaphoreTake(s_wakeSemaphore, 0);
 
   // Attach GPIO wake interrupts (FALLING = button press to GND).
   for (uint8_t i = 0; i < NUM_BUTTONS; i++) {
     attachInterrupt(digitalPinToInterrupt(s_buttons[i].pin), wakeISR, FALLING);
   }
 
-  // __WFI() is the ARM Cortex-M "Wait For Interrupt" instruction.  It
-  // suspends the CPU core until any interrupt fires (GPIO, RTOS tick, radio
-  // DMA, …) which is functionally equivalent to EM1 on EFR32: peripherals,
-  // SRAM, and the Thread radio DMA all stay powered.  The SDK holds an EM1
-  // requirement while Thread is active so the power manager will not allow
-  // the system to descend below EM1 anyway.
-  __WFI();
+  // Prevent the power manager from going below EM1.  This is the critical
+  // safety guard: without it, the EFR32 could enter EM2/EM3 (disabling HFXO)
+  // during any transient window where the Thread driver's own EM1 requirement
+  // is not yet registered, corrupting the radio stack.
+  sl_power_manager_add_em_requirement(SL_POWER_MANAGER_EM1);
+
+  // Block the FreeRTOS task indefinitely.  Unlike __WFI(), blocking here marks
+  // the task as "waiting" so FreeRTOS's tickless-idle hook can run and the
+  // power manager will actually enter EM1 between ticks.  wakeISR() gives this
+  // semaphore, which unblocks the task and resumes execution below.
+  xSemaphoreTake(s_wakeSemaphore, portMAX_DELAY);
+
+  // Release the explicit EM1 requirement now that we are active again.
+  sl_power_manager_remove_em_requirement(SL_POWER_MANAGER_EM1);
 
   // ── Execution resumes here after wake ────────────────────────────────────
 
@@ -349,12 +380,17 @@ static void enterLightSleep()
 
 // ═════════════════════════════════════════════════════════════════════════════
 // wakeISR()
-// Minimal GPIO interrupt service routine.  The CPU wakes automatically from
-// EM1 when a GPIO interrupt fires; no application-level action is required.
+// GPIO interrupt service routine that unblocks the sleeping loop task.
+// Gives s_wakeSemaphore from ISR context so xSemaphoreTake() in
+// enterLightSleep() returns and the task resumes.  portYIELD_FROM_ISR()
+// triggers an immediate context switch if the task has higher priority than
+// whatever was running when the interrupt fired.
 // ═════════════════════════════════════════════════════════════════════════════
 static void wakeISR()
 {
-  // No-op: hardware interrupt mechanism handles CPU wake from EM1.
-  // Button state is re-read in loop() after wake.
+  if (s_wakeSemaphore == nullptr) { return; }
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  xSemaphoreGiveFromISR(s_wakeSemaphore, &xHigherPriorityTaskWoken);
+  portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
