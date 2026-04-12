@@ -6,6 +6,10 @@
    (previousPosition=1) so HomeKit "single press" automations trigger correctly.
    EM1 light sleep is used between button presses to save power.
 
+   Factory reset: hold BTN_ON (D0) and BTN_OFF (D1) simultaneously for 10 seconds.
+   The LED blinks during the countdown; after 10 s the device erases its Matter
+   fabric / Thread credentials and reboots so it can be re-commissioned.
+
    Compatible board: Seeed Studio XIAO MG24 (Matter)
 
    Based on the Silicon Labs / Seeed Studio Matter switch example.
@@ -47,8 +51,12 @@ public:
 #define BTN_SCENE2    D5
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-#define DEBOUNCE_MS   50UL    // debounce window (ms)
-#define AWAKE_MS      10000UL // idle time before entering EM1 sleep
+#define DEBOUNCE_MS              50UL   // debounce window (ms)
+#define AWAKE_MS             10000UL   // idle time before entering EM1 sleep
+#define FACTORY_RESET_HOLD_MS 10000UL  // hold ON+OFF for this long to factory-reset
+#define FACTORY_RESET_BLINK_MS  300UL  // LED blink interval during countdown
+#define FACTORY_RESET_FLASH_COUNT   5  // number of confirmation flashes on trigger
+#define FACTORY_RESET_FLASH_MS     80  // on/off duration (ms) of each flash
 
 // ── Matter endpoints ─────────────────────────────────────────────────────────
 MatterSwitchWithId matter_switch_on;
@@ -82,12 +90,17 @@ static unsigned long btn_last_change_ms[NUM_BUTTONS];
 static bool          btn_press_sent[NUM_BUTTONS];
 
 // ── Sleep tracking ────────────────────────────────────────────────────────────
-static unsigned long     last_activity_ms = 0;
-static SemaphoreHandle_t wake_semaphore   = nullptr;
+static unsigned long     last_activity_ms            = 0;
+static SemaphoreHandle_t wake_semaphore              = nullptr;
+
+// ── Factory-reset gesture tracking ───────────────────────────────────────────
+// 0 = gesture not started; non-zero = millis() when both buttons were first held
+static unsigned long     factory_reset_hold_since_ms = 0;
 
 // ── Forward declarations ──────────────────────────────────────────────────────
 static void handle_button_press(uint8_t index);
 static void handle_button_release(uint8_t index);
+static void check_factory_reset(unsigned long now);
 static void enter_light_sleep();
 static void wake_isr();
 
@@ -185,6 +198,9 @@ void loop()
     }
   }
 
+  // Check factory-reset gesture (ON + OFF held simultaneously for 10 s)
+  check_factory_reset(now);
+
   // Enter EM1 light sleep after idle
   if ((millis() - last_activity_ms) > AWAKE_MS) {
     enter_light_sleep();
@@ -238,6 +254,51 @@ static void handle_button_release(uint8_t index)
   // construction and releases it on destruction, even if an exception is thrown.
   chip::DeviceLayer::StackLock lock;
   chip::app::Clusters::SwitchServer::Instance().OnShortRelease(eid, 1 /* previousPosition */);
+}
+
+// -----------------------------------------------------------------------------
+// check_factory_reset() — hold BTN_ON + BTN_OFF for 10 s to decommission
+//
+// btn_stable_high[i] is false while button i is confirmed-pressed (active-low).
+// The gesture is: both buttons confirmed-held at the same time for 10 seconds.
+// The LED blinks at 300 ms during the countdown to give visible feedback.
+// After 10 s the device erases its fabric + Thread credentials and reboots.
+// -----------------------------------------------------------------------------
+static void check_factory_reset(unsigned long now)
+{
+  // Indices 0 = BTN_ON, 1 = BTN_OFF; stable_high is false when pressed
+  bool both_held = !btn_stable_high[0] && !btn_stable_high[1];
+
+  if (!both_held) {
+    if (factory_reset_hold_since_ms != 0) {
+      factory_reset_hold_since_ms = 0;
+      Serial.println("Factory reset cancelled");
+      digitalWrite(LED_BUILTIN, LED_BUILTIN_ACTIVE); // restore LED
+    }
+    return;
+  }
+
+  if (factory_reset_hold_since_ms == 0) {
+    factory_reset_hold_since_ms = now;
+    Serial.println("ON+OFF held — keep holding for 10 s to factory-reset...");
+  }
+
+  unsigned long held_ms = now - factory_reset_hold_since_ms;
+
+  // Blink LED relative to countdown start for consistent visual feedback
+  digitalWrite(LED_BUILTIN, (((now - factory_reset_hold_since_ms) / FACTORY_RESET_BLINK_MS) % 2u)
+               ? LED_BUILTIN_ACTIVE : LED_BUILTIN_INACTIVE);
+
+  if (held_ms >= FACTORY_RESET_HOLD_MS) {
+    Serial.println("Factory reset triggered — erasing credentials and rebooting...");
+    // Blocking confirmation flash: decommission() is called immediately after,
+    // so normal processing does not need to continue during these flashes.
+    for (int i = 0; i < FACTORY_RESET_FLASH_COUNT * 2; i++) {
+      digitalWrite(LED_BUILTIN, (i % 2) ? LED_BUILTIN_ACTIVE : LED_BUILTIN_INACTIVE);
+      delay(FACTORY_RESET_FLASH_MS);
+    }
+    Matter.decommission(); // erases fabric / Thread creds then reboots; never returns
+  }
 }
 
 // -----------------------------------------------------------------------------
