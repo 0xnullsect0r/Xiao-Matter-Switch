@@ -86,10 +86,13 @@ Internal pull-ups are enabled in firmware — no external resistors needed.
 
 ---
 
-## Commissioning (Adding to HomeKit)
+## Adding to HomeKit
 
-1. Flash the sketch and open the Serial Monitor.
-2. If the device has never been commissioned, you will see:
+### Step 1 — Flash & open Serial Monitor
+
+1. Upload the sketch to the XIAO MG24.
+2. Open **Serial Monitor** at **115200 baud**.
+3. If the device has never been added to HomeKit, you will see output similar to:
 
    ```
    Device is NOT commissioned.
@@ -98,37 +101,61 @@ Internal pull-ups are enabled in firmware — no external resistors needed.
      2. Tap  +  ->  Add Accessory.
      3. Scan the QR code on the device label, or choose
         'More Options' and enter the setup code manually.
-     6 button accessories will be added (ON, OFF, Dim Up,
+     6 switch accessories will be added (ON, OFF, Dim Up,
      Dim Down, Scene 1, Scene 2).  Create automations for
      each one in the Home app to control your smart lights.
+
+   Setup code : 34970112
+   QR URL     : MT:...
    ```
 
-3. Open the **Home** app on your iPhone/iPad → tap **+** → **Add Accessory**.
-4. Scan the QR code printed on the XIAO MG24 board or on the packaging, **or** choose *More Options* and type the numeric setup code.
-5. Follow the on-screen prompts.  **Six** switch accessories will be added:
-   - **ON**, **OFF**, **Dim Up**, **Dim Down**, **Scene 1**, **Scene 2**
+   The **setup code** and **QR URL** are printed automatically from the board's factory-programmed Matter credentials.
 
-> **Tip:** Assign all accessories to the same room as the lights they will control, then set up automations for each switch (trigger: "turns on").
+### Step 2 — Add the accessory in the Home app
+
+1. Open the **Home** app on your iPhone or iPad.
+2. Tap **+** (top-right) → **Add Accessory**.
+3. **Scan** the QR code shown in the Serial Monitor output (copy the URL into a browser or use a QR generator), **or** tap **More options** → **Enter Code** and type the 8-digit setup code.
+4. When prompted, assign the accessories to a **room** (e.g., "Living Room").  HomeKit will add **six** switch accessories — one per button:
+   - **XIAO Switch 1** (ON button)
+   - **XIAO Switch 2** (OFF button)
+   - **XIAO Switch 3** (Dim Up button)
+   - **XIAO Switch 4** (Dim Down button)
+   - **XIAO Switch 5** (Scene 1 button)
+   - **XIAO Switch 6** (Scene 2 button)
+
+   > **Rename them** in the Home app right after adding so they're easy to find in automations (e.g., "Lights ON", "Lights OFF", "Dim Up", "Dim Down", "Movie Night", "Reading").
+
+5. Tap **Done**.  The device is now paired.
 
 ---
 
-## HomeKit Automation Setup
+## Setting Up Automations (Making the Buttons Do Things)
 
-Do this for every button you want to use:
+Each button works as a **momentary switch** — pressing it briefly turns the switch **on**, then it turns itself back **off** after ~150 ms.  In HomeKit, you create an automation that fires whenever a switch **turns on**.
 
-1. In the **Home** app, open **Automations → +**.
-2. Choose **An Accessory is Controlled**.
-3. Select the switch (e.g., **ON**).
-4. Trigger: **"turns on"**.
-5. Add the action — for example:
-   - **ON** → Turn on your living room lights.
-   - **OFF** → Turn off your living room lights.
-   - **Dim Up** → Increase brightness of your living room lights by 10 %.
-   - **Dim Down** → Decrease brightness of your living room lights by 10 %.
-   - **Scene 1** → Activate a "Movie Night" scene.
-   - **Scene 2** → Activate a "Reading" scene.
+### How to create an automation for one button
 
-You can assign completely different lights or actions to each button — the switch itself does not store or track any light state.
+1. In the **Home** app, tap the **Automation** tab (clock icon) → **+** → **An Accessory is Controlled**.
+2. Select the switch for the button you want (e.g., **"Lights ON"**).
+3. Under **When this happens**, choose **Turns On**.
+4. Tap **Next**, then under **Do this** add the action you want — for example:
+   - **Lights ON** switch → Turn on your living-room lights
+   - **Lights OFF** switch → Turn off your living-room lights
+   - **Dim Up** switch → Increase brightness of your lights by 10 %
+   - **Dim Down** switch → Decrease brightness of your lights by 10 %
+   - **Movie Night** switch → Activate a "Movie Night" scene
+   - **Reading** switch → Activate a "Reading" scene (or run a Shortcut)
+5. Tap **Done**.
+6. Repeat for each button you want to use.
+
+> **Important:** Always set the trigger to **"Turns On"**, not "Turns Off".  The momentary pulse only generates a "turns on" event — the switch resets to off automatically and HomeKit never sees a "turns off" action during normal use.
+
+### Tips
+
+- You can assign **any action** to any button — the names are just suggestions.  Each button is completely independent.
+- To **change what a button does**, edit or delete the automation in the **Automation** tab.
+- To **re-commission** (reset pairing), hold the XIAO MG24 reset button for 10 s (or erase flash and re-upload the sketch), then remove the accessories in the **Home** app under **Settings → Accessories → Remove Accessory**.
 
 ---
 
