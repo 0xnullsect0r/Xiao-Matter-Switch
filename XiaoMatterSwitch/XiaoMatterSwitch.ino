@@ -27,7 +27,7 @@
 // ── Timing ───────────────────────────────────────────────────────────────────
 #define DEBOUNCE_MS   50UL    // debounce window
 #define PULSE_MS      150UL   // momentary ON-pulse width
-#define AWAKE_MS      10000UL // idle time before entering EM1 sleep
+#define AWAKE_MS      60000UL // idle time before entering EM1 sleep (1 minute)
 
 // ── Matter endpoints ─────────────────────────────────────────────────────────
 MatterSwitch matter_switch_on;
@@ -124,10 +124,15 @@ void setup()
   Serial.println("Connected to Thread network");
 
   Serial.println("Waiting for Matter device discovery...");
-  while (!matter_switch_on.is_online()) {
+  while (true) {
+    bool all_online = true;
+    for (int i = 0; i < NUM_BUTTONS; i++) {
+      if (!endpoints[i]->is_online()) { all_online = false; break; }
+    }
+    if (all_online) break;
     delay(200);
   }
-  Serial.println("Matter switch device is now online");
+  Serial.println("All Matter switch endpoints are online");
 
   last_activity_ms = millis();
 }
@@ -180,8 +185,9 @@ static void handle_button_press(uint8_t index)
     "BTN ON", "BTN OFF", "BTN DIM UP", "BTN DIM DOWN", "BTN SCENE1", "BTN SCENE2"
   };
   if (index >= NUM_BUTTONS) return;
-  Serial.printf("Button pressed - %s\n", names[index]);
+  Serial.printf("Button pressed - %s (endpoint %d)\n", names[index], index + 1);
   endpoints[index]->set_state(true);
+  Serial.printf("  -> set_state(true) on endpoint %d\n", index + 1);
   pulse_start_ms[index] = millis();
   pulse_pending[index]  = true;
 }
@@ -213,9 +219,20 @@ static void enter_light_sleep()
 
   unsigned long wake_ms = millis();
   for (int i = 0; i < NUM_BUTTONS; i++) {
+    bool cur_high = (digitalRead(button_pins[i]) == HIGH);
+    if (!cur_high) {
+      // This button is still pressed — fire it immediately.
+      // Setting btn_stable_high to false prevents the debounce loop from
+      // re-triggering once the button is released and pressed again.
+      handle_button_press(i);
+      btn_stable_high[i] = false;
+    } else {
+      // Button already released — start in clean released state so the
+      // debounce loop will detect the next press normally.
+      btn_stable_high[i] = true;
+    }
+    btn_raw_high[i]       = cur_high;
     btn_last_change_ms[i] = wake_ms;
-    btn_raw_high[i]       = (digitalRead(button_pins[i]) == HIGH);
-    btn_stable_high[i]    = btn_raw_high[i];
   }
 
   last_activity_ms = wake_ms;
