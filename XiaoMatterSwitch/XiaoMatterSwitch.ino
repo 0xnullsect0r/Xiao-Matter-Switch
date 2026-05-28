@@ -17,8 +17,8 @@
 #include <semphr.h>
 
 // ── Pin definitions (XIAO MG24 silk-screen labels) ──────────────────────────
-#define BTN_ON        D6
-#define BTN_OFF       D7
+#define BTN_ON        D0
+#define BTN_OFF       D1
 #define BTN_DIM_UP    D2
 #define BTN_DIM_DOWN  D3
 #define BTN_SCENE1    D4
@@ -124,15 +124,10 @@ void setup()
   Serial.println("Connected to Thread network");
 
   Serial.println("Waiting for Matter device discovery...");
-  while (true) {
-    bool all_online = true;
-    for (int i = 0; i < NUM_BUTTONS; i++) {
-      if (!endpoints[i]->is_online()) { all_online = false; break; }
-    }
-    if (all_online) break;
+  while (!matter_switch_on.is_online()) {
     delay(200);
   }
-  Serial.println("All Matter switch endpoints are online");
+  Serial.println("Matter device is online");
 
   last_activity_ms = millis();
 }
@@ -216,6 +211,11 @@ static void enter_light_sleep()
   for (int i = 0; i < NUM_BUTTONS; i++) {
     detachInterrupt(digitalPinToInterrupt(button_pins[i]));
   }
+
+  // Short settle time: adjacent pins (D0/D1) can capacitively couple for a
+  // few microseconds after a press. Waiting 10 ms ensures we read stable,
+  // independent pin states rather than transient coupling artefacts.
+  delay(10);
 
   unsigned long wake_ms = millis();
   for (int i = 0; i < NUM_BUTTONS; i++) {
