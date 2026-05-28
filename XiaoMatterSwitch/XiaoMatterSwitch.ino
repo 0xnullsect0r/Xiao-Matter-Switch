@@ -17,8 +17,8 @@
 #include <semphr.h>
 
 // ── Pin definitions (XIAO MG24 silk-screen labels) ──────────────────────────
-#define BTN_ON        D0
-#define BTN_OFF       D1
+#define BTN_ON        D6
+#define BTN_OFF       D7
 #define BTN_DIM_UP    D2
 #define BTN_DIM_DOWN  D3
 #define BTN_SCENE1    D4
