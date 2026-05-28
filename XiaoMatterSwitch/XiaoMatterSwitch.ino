@@ -25,7 +25,7 @@
 #define BTN_SCENE2    D5
 
 // ── Timing ───────────────────────────────────────────────────────────────────
-#define DEBOUNCE_MS   50UL    // debounce window
+#define DEBOUNCE_MS   100UL   // debounce window (100 ms handles most mechanical switch bounce)
 #define PULSE_MS      150UL   // momentary ON-pulse width
 #define AWAKE_MS      60000UL // idle time before entering EM1 sleep (1 minute)
 
